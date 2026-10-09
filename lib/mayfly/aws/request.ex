@@ -1,7 +1,15 @@
 defmodule Mayfly.AWS.Request do
-  @moduledoc false
-  # Shared sign-and-send for the service clients: credentials from the
-  # environment, SigV4 headers, one HTTP call, uniform error shape.
+  @moduledoc """
+  Shared sign-and-send for the service clients: credentials from the
+  environment, SigV4 headers, one HTTP call, uniform error shape. Use `send/6`
+  to call any AWS API the dedicated modules do not cover.
+
+  Errors are `{:error, {code, message}}` where `code` is the service's error
+  code (`"AccessDenied"`, `"ParameterNotFound"`, `"HTTP500"` when none was
+  returned) or `{:error, reason}` for transport failures.
+  """
+
+  @typedoc "`{code, message}` from the service, or a transport reason."
 
   alias Mayfly.AWS.{Credentials, HTTP, SigV4}
 
