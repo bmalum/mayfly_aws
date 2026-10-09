@@ -1,13 +1,16 @@
 name: CI
 on: { push: { branches: [main] }, pull_request: {} }
 permissions: { contents: read }
+env:
+  # mayfly is a path dependency until it is on Hex; check it out next to this package.
+  MAYFLY_PATH: ${{ github.workspace }}/.deps-src/mayfly
 jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
-        with: { repository: bmalum/mayfly, path: ../mayfly }
+        with: { repository: bmalum/mayfly, path: .deps-src/mayfly }
       - uses: erlef/setup-beam@v1
         with: { elixir-version: "1.18.4", otp-version: "27.3" }
       - run: mix deps.get
