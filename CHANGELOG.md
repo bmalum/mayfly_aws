@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.0] - 2026-10-10
+
+### Added
+- `Mayfly.AWS.S3`: put/get/head/delete object, ListObjectsV2 (one page), presigned
+  GET/PUT URLs (query-string SigV4).
+- `Mayfly.AWS.SQS`: send_message, receive_messages, delete_message, change_visibility
+  (JSON protocol).
+- `Mayfly.AWS.SNS`: publish with subject, attributes, FIFO fields.
+- `Mayfly.AWS.SSM`: get_parameter, get_parameters, get_parameters_by_path(!) with
+  pagination and decryption.
+- `Mayfly.AWS.SecretsManager`: get_secret_value (string or binary), get_secret_json.
+- `Mayfly.AWS.HTTP.request/5` (any method, response headers) and a shared
+  `Mayfly.AWS.Request` sign-and-send with JSON/XML error parsing.
+- `Mayfly.AWS.FakeAWS` test server (test/support).
+
+All verified from a Lambda function against the real services in one invocation.
+
 ## [0.1.0] - 2026-10-09
 
 ### Added

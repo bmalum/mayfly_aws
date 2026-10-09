@@ -1,9 +1,22 @@
 # Mayfly.AWS
 
 Companion package for [Mayfly](https://elixir-aws-lambda.dev) (Elixir on AWS
-Lambda): exactly-once handlers with `Mayfly.Idempotency`, backed by a minimal
-signed DynamoDB client. No dependencies beyond OTP (`:inets`/`:ssl` for TLS,
-started lazily on first use).
+Lambda): the handful of AWS calls most Lambda functions actually make, with no
+dependencies beyond OTP (`:inets`/`:ssl` for TLS, started lazily on first use):
+
+| Module | Operations |
+|---|---|
+| `Mayfly.Idempotency` | exactly-once handler execution on DynamoDB |
+| `Mayfly.AWS.DynamoDB` | PutItem, GetItem, UpdateItem, DeleteItem, raw `request/3` |
+| `Mayfly.AWS.S3` | put/get/head/delete object, ListObjectsV2, presigned GET/PUT URLs |
+| `Mayfly.AWS.SQS` | send, receive, delete, change visibility |
+| `Mayfly.AWS.SNS` | publish (topic, target or phone number, message attributes) |
+| `Mayfly.AWS.SSM` | get_parameter(s), get_parameters_by_path (paginated, decrypting) |
+| `Mayfly.AWS.SecretsManager` | get_secret_value, get_secret_json |
+
+Not a general AWS SDK: every function here was verified against the real
+service from a Lambda function. For the long tail, `Mayfly.AWS.SigV4.sign/9`
+signs any request.
 
 It lives outside the core `mayfly` package so the runtime itself stays free of
 `:ssl` and keeps its cold start.
@@ -54,6 +67,30 @@ aws dynamodb update-time-to-live --table-name idempotency \
 ```
 
 Results are stored as JSON, so replayed results have string keys.
+
+## Services
+
+```elixir
+alias Mayfly.AWS.{S3, SQS, SNS, SSM, SecretsManager}
+
+# fetch configuration once per environment
+def init(_opts) do
+  config = SSM.get_parameters_by_path!("/myapp/prod/", strip_prefix: true)
+  {:ok, db} = SecretsManager.get_secret_json("prod/db")
+  {:ok, %{config: config, db: db}}
+end
+
+{:ok, %{etag: _}} = S3.put_object("bucket", "reports/1.json", JSON.encode!(r), content_type: "application/json")
+{:ok, body, _headers} = S3.get_object("bucket", "reports/1.json")
+url = S3.presign(:get, "bucket", "reports/1.json", expires_in: 300)
+{:ok, %{message_id: _}} = SQS.send_message(queue_url, %{"order" => 1}, attributes: %{source: "api"})
+{:ok, %{message_id: _}} = SNS.publish(topic_arn, %{"event" => "order.placed"}, subject: "order")
+```
+
+Errors are `{:error, {code, message}}` with the service's error code
+(`"AccessDenied"`, `"QueueDoesNotExist"`, `"ParameterNotFound"`, …) or a
+transport reason. `endpoint:` on every call points at LocalStack/MinIO or a
+test server; `region:` overrides `AWS_REGION`.
 
 ## DynamoDB client
 
