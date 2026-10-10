@@ -168,8 +168,27 @@ defmodule Mayfly.Idempotency do
   # errors): a result that was produced but not stored would make the next
   # retry run `fun` again, which is exactly what idempotency is meant to prevent.
   defp complete(table, key, token, value, expires_at, ddb) do
-    result_json = JSON.encode!(value)
+    case safe_encode(value) do
+      {:ok, result_json} ->
+        store_result(table, key, token, result_json, expires_at, ddb)
 
+      {:error, reason} ->
+        # The side effect already happened; the caller must still get its result.
+        # Without a stored result the next retry re-executes `fun`.
+        Logger.warning(
+          "idempotency: result for #{key} is not JSON-encodable (#{inspect(reason, limit: 5)}); " <>
+            "replays will re-execute. Return JSON-encodable terms (maps, lists, strings, numbers)."
+        )
+    end
+  end
+
+  defp safe_encode(value) do
+    {:ok, JSON.encode!(value)}
+  rescue
+    e -> {:error, e}
+  end
+
+  defp store_result(table, key, token, result_json, expires_at, ddb) do
     if byte_size(result_json) > 390_000 do
       Logger.warning(
         "idempotency: result for #{key} is #{byte_size(result_json)} bytes, above DynamoDB's item limit; " <>

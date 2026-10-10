@@ -243,4 +243,15 @@ defmodule Mayfly.IdempotencyTest do
     assert {:error, :late} = Task.await(slow)
     assert Map.has_key?(FakeDynamoDB.items(fake), "k2"), "the other owner's claim must survive"
   end
+
+  test "a non-JSON result is returned to the caller even though it cannot be stored", %{
+    fake: fake,
+    opts: opts
+  } do
+    assert {:ok, {:tuple, 1}} =
+             Idempotency.run(%{}, fn -> {:ok, {:tuple, 1}} end, opts ++ [key: "t"])
+
+    # the claim stays INPROGRESS (no result), so a later retry runs again rather than replaying garbage
+    assert %{"status" => %{"S" => "INPROGRESS"}} = FakeDynamoDB.items(fake)["t"]
+  end
 end

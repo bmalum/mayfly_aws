@@ -2,7 +2,7 @@
 
 Companion package for [Mayfly](https://elixir-aws-lambda.dev) (Elixir on AWS
 Lambda): the handful of AWS calls most Lambda functions actually make, with no
-dependencies beyond OTP (`:inets`/`:ssl` for TLS, started lazily on first use):
+dependencies beyond OTP (`:inets`/`:ssl` for TLS, ~20 ms to start once at boot):
 
 | Module | Operations |
 |---|---|

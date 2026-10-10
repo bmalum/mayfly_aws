@@ -54,9 +54,19 @@ defmodule Mayfly.AWS.FakeAWS do
       |> String.split(";")
       |> Enum.map_join(fn h -> "#{h}:#{String.trim(req.headers[h] || "")}\n" end)
 
+    actual_hash = :crypto.hash(:sha256, req.body) |> Base.encode16(case: :lower)
+
     payload_hash =
-      req.headers["x-amz-content-sha256"] ||
-        :crypto.hash(:sha256, req.body) |> Base.encode16(case: :lower)
+      case req.headers["x-amz-content-sha256"] do
+        nil ->
+          actual_hash
+
+        ^actual_hash ->
+          actual_hash
+
+        other ->
+          raise("x-amz-content-sha256 #{other} does not match the body hash #{actual_hash}")
+      end
 
     canonical_path =
       if service == "s3",
