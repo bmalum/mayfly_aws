@@ -80,6 +80,8 @@ defmodule Mayfly.AWS.HTTP do
   end
 
   defp ensure_started do
+    # :ssl/:inets are declared with `:load` (not started) in mix.exs so they cost
+    # nothing at boot; the first AWS call starts them.
     for app <- [:crypto, :asn1, :public_key, :ssl, :inets] do
       {:ok, _} = Application.ensure_all_started(app)
     end

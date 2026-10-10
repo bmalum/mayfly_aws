@@ -27,12 +27,42 @@ defmodule Mayfly.AWS.FakeDynamoDB do
   def handle_call(:items, _f, s), do: {:reply, s.items, s}
 
   def handle_call({:put_raw, item}, _f, s),
-    do: {:reply, :ok, %{s | items: Map.put(s.items, item["id"], item)}}
+    do: {:reply, :ok, %{s | items: Map.put(s.items, item["id"]["S"], item)}}
 
   def handle_call({:op, op, body}, _f, s) do
-    {status, resp, items} = handle_op(op, body, s.items)
+    {status, resp, items} =
+      try do
+        handle_op(op, body, s.items)
+      catch
+        {:conditional, items} -> {400, conditional_failed(), items}
+      end
+
     {:reply, {status, resp}, %{s | items: items}}
   end
+
+  defp conditional_failed,
+    do: %{
+      "__type" => "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException",
+      "message" => "The conditional request failed"
+    }
+
+  # Supports the single equality condition the idempotency module uses on
+  # Update/Delete: "#t = :token" (names/values resolved).
+  defp equality_ok?(%{"ConditionExpression" => cond} = b, existing) when is_binary(cond) do
+    names = b["ExpressionAttributeNames"] || %{}
+    values = b["ExpressionAttributeValues"] || %{}
+
+    case Regex.run(~r/^\s*(#?\w+)\s*=\s*(:\w+)\s*$/, cond) do
+      [_, attr, val] ->
+        attr = Map.get(names, attr, attr)
+        existing != nil and existing[attr] == values[val]
+
+      nil ->
+        true
+    end
+  end
+
+  defp equality_ok?(_b, _existing), do: true
 
   # -- operations (items stored as attribute-value maps) ---------------------------
 
@@ -63,14 +93,23 @@ defmodule Mayfly.AWS.FakeDynamoDB do
     end
   end
 
-  defp handle_op("DeleteItem", %{"Key" => key}, items),
-    do: {200, %{}, Map.delete(items, key["id"]["S"])}
+  defp handle_op("DeleteItem", %{"Key" => key} = b, items) do
+    id = key["id"]["S"]
+
+    if equality_ok?(b, items[id]),
+      do: {200, %{}, Map.delete(items, id)},
+      else: {400, conditional_failed(), items}
+  end
 
   defp handle_op("UpdateItem", %{"Key" => key, "UpdateExpression" => "SET " <> sets} = b, items) do
     id = key["id"]["S"]
     item = items[id] || key
     names = b["ExpressionAttributeNames"] || %{}
     values = b["ExpressionAttributeValues"] || %{}
+
+    if not equality_ok?(b, items[id]) do
+      throw({:conditional, items})
+    end
 
     item =
       sets

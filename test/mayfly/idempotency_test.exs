@@ -179,4 +179,68 @@ defmodule Mayfly.IdempotencyTest do
       Idempotency.run(%{}, fn -> {:ok, 1} end, [])
     end
   end
+
+  test "completion and release are conditioned on the claim token", %{fake: fake, opts: opts} do
+    parent = self()
+
+    slow =
+      Task.async(fn ->
+        Idempotency.run(
+          %{},
+          fn ->
+            send(parent, :running)
+            receive do: (:go -> {:ok, :stale_result})
+          end,
+          opts ++ [key: "k"]
+        )
+      end)
+
+    assert_receive :running
+    # another owner took the claim over (as it would after in_progress_until passed)
+    FakeDynamoDB.put_raw(fake, %{
+      "id" => %{"S" => "k"},
+      "status" => %{"S" => "INPROGRESS"},
+      "token" => %{"S" => "other"},
+      "expires_at" => %{"N" => "#{System.system_time(:second) + 3600}"},
+      "in_progress_until" => %{"N" => "#{System.system_time(:second) + 60}"}
+    })
+
+    send(slow.pid, :go)
+    assert {:ok, :stale_result} = Task.await(slow)
+
+    assert %{"status" => %{"S" => "INPROGRESS"}, "token" => %{"S" => "other"}} =
+             FakeDynamoDB.items(fake)["k"]
+
+    refute Map.has_key?(FakeDynamoDB.items(fake)["k"], "result")
+  end
+
+  test "a failing fun releases only its own claim", %{fake: fake, opts: opts} do
+    parent = self()
+
+    slow =
+      Task.async(fn ->
+        Idempotency.run(
+          %{},
+          fn ->
+            send(parent, :running)
+            receive do: (:go -> {:error, :late})
+          end,
+          opts ++ [key: "k2"]
+        )
+      end)
+
+    assert_receive :running
+
+    FakeDynamoDB.put_raw(fake, %{
+      "id" => %{"S" => "k2"},
+      "status" => %{"S" => "INPROGRESS"},
+      "token" => %{"S" => "other"},
+      "expires_at" => %{"N" => "#{System.system_time(:second) + 3600}"},
+      "in_progress_until" => %{"N" => "#{System.system_time(:second) + 60}"}
+    })
+
+    send(slow.pid, :go)
+    assert {:error, :late} = Task.await(slow)
+    assert Map.has_key?(FakeDynamoDB.items(fake), "k2"), "the other owner's claim must survive"
+  end
 end

@@ -60,6 +60,10 @@ defmodule Mayfly.AWS.SQS do
       }
       |> maybe("VisibilityTimeout", opts[:visibility_timeout])
 
+    # the HTTP timeout has to outlast the long poll
+    wait = Keyword.get(opts, :wait_seconds, 0)
+    opts = Keyword.put_new(opts, :timeout, wait * 1000 + 10_000)
+
     with {:ok, resp} <- call("ReceiveMessage", params, opts) do
       {:ok,
        for m <- resp["Messages"] || [] do

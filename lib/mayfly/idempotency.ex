@@ -72,9 +72,15 @@ defmodule Mayfly.Idempotency do
         end
       end)
 
+    # A per-claim token ties completion and release to *this* execution: a stale
+    # owner whose claim expired and was taken over must not overwrite or delete
+    # the new owner's record.
+    token = :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
+
     claim = %{
       "id" => key,
       "status" => "INPROGRESS",
+      "token" => token,
       "expires_at" => now + ttl,
       "in_progress_until" => now + in_progress_ttl,
       "request_id" => ctx && ctx.request_id
@@ -91,7 +97,7 @@ defmodule Mayfly.Idempotency do
            ] ++ ddb
          ) do
       {:ok, _} ->
-        execute(table, key, fun, now + ttl, ddb)
+        execute(table, key, token, fun, now + ttl, ddb)
 
       {:error, :conditional_check_failed} ->
         replay(table, key, ddb)
@@ -114,7 +120,7 @@ defmodule Mayfly.Idempotency do
     end
   end
 
-  defp execute(table, key, fun, expires_at, ddb) do
+  defp execute(table, key, token, fun, expires_at, ddb) do
     result =
       try do
         fun.()
@@ -126,43 +132,23 @@ defmodule Mayfly.Idempotency do
 
     case result do
       {:ok, value} ->
-        DynamoDB.update_item(
-          table,
-          %{"id" => key},
-          [
-            update: "SET #s = :done, #r = :result, expires_at = :exp",
-            names: %{"#s" => "status", "#r" => "result"},
-            values: %{
-              ":done" => "COMPLETED",
-              ":result" => JSON.encode!(value),
-              ":exp" => expires_at
-            }
-          ] ++ ddb
-        )
-        |> case do
-          {:ok, _} ->
-            :ok
-
-          {:error, reason} ->
-            Logger.warning("idempotency: could not store result for #{key}: #{inspect(reason)}")
-        end
-
+        complete(table, key, token, value, expires_at, ddb)
         {:ok, value}
 
       {:error, _} = error ->
-        release(table, key, ddb)
+        release(table, key, token, ddb)
         error
 
       {:raised, e, st} ->
-        release(table, key, ddb)
+        release(table, key, token, ddb)
         reraise e, st
 
       {:caught, kind, reason, st} ->
-        release(table, key, ddb)
+        release(table, key, token, ddb)
         :erlang.raise(kind, reason, st)
 
       other ->
-        release(table, key, ddb)
+        release(table, key, token, ddb)
         {:error, {:invalid_result, other}}
     end
   end
@@ -177,13 +163,85 @@ defmodule Mayfly.Idempotency do
     end
   end
 
-  defp release(table, key, ddb) do
-    case DynamoDB.delete_item(table, %{"id" => key}, ddb) do
+  # Mark COMPLETED with the result, only if this execution still owns the claim.
+  # The store is retried a few times (DynamoDB throttling, transient network
+  # errors): a result that was produced but not stored would make the next
+  # retry run `fun` again, which is exactly what idempotency is meant to prevent.
+  defp complete(table, key, token, value, expires_at, ddb) do
+    result_json = JSON.encode!(value)
+
+    if byte_size(result_json) > 390_000 do
+      Logger.warning(
+        "idempotency: result for #{key} is #{byte_size(result_json)} bytes, above DynamoDB's item limit; " <>
+          "replays will re-execute. Store large results elsewhere and return a reference."
+      )
+    end
+
+    with_retries(3, fn ->
+      DynamoDB.update_item(
+        table,
+        %{"id" => key},
+        [
+          update: "SET #s = :done, #r = :result, expires_at = :exp",
+          condition: "#t = :token",
+          names: %{"#s" => "status", "#r" => "result", "#t" => "token"},
+          values: %{
+            ":done" => "COMPLETED",
+            ":result" => result_json,
+            ":exp" => expires_at,
+            ":token" => token
+          }
+        ] ++ ddb
+      )
+    end)
+    |> case do
       {:ok, _} ->
+        :ok
+
+      {:error, :conditional_check_failed} ->
+        Logger.warning(
+          "idempotency: claim for #{key} was taken over before completion; result not stored"
+        )
+
+      {:error, reason} ->
+        Logger.error(
+          "idempotency: could not store result for #{key} after retries: #{inspect(reason)}"
+        )
+    end
+  end
+
+  # Delete the record so a retry can run, only if this execution still owns it.
+  defp release(table, key, token, ddb) do
+    with_retries(3, fn ->
+      DynamoDB.delete_item(
+        table,
+        %{"id" => key},
+        [condition: "#t = :token", names: %{"#t" => "token"}, values: %{":token" => token}] ++ ddb
+      )
+    end)
+    |> case do
+      {:ok, _} ->
+        :ok
+
+      {:error, :conditional_check_failed} ->
         :ok
 
       {:error, reason} ->
         Logger.warning("idempotency: could not release #{key}: #{inspect(reason)}")
+    end
+  end
+
+  defp with_retries(attempts, fun, attempt \\ 1) do
+    case fun.() do
+      {:error, :conditional_check_failed} = r ->
+        r
+
+      {:error, _} when attempt < attempts ->
+        Process.sleep(50 * attempt)
+        with_retries(attempts, fun, attempt + 1)
+
+      other ->
+        other
     end
   end
 end

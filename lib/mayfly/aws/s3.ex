@@ -136,7 +136,13 @@ defmodule Mayfly.AWS.S3 do
     date = String.slice(amz_date, 0, 8)
     scope = "#{date}/#{region}/s3/aws4_request"
     base = url(bucket, key, opts)
-    %URI{host: host, path: path} = URI.parse(base)
+    %URI{host: host, port: port, scheme: scheme, path: path} = URI.parse(base)
+
+    host =
+      if port in [nil, 80, 443] and
+           ((scheme == "https" and port in [nil, 443]) or (scheme == "http" and port in [nil, 80])),
+         do: host,
+         else: "#{host}:#{port}"
 
     signed_headers =
       [{"host", host}] ++
@@ -165,7 +171,7 @@ defmodule Mayfly.AWS.S3 do
       Enum.join(
         [
           method |> to_string() |> String.upcase(),
-          SigV4.canonical_path(path),
+          SigV4.canonical_path(path, "s3"),
           canonical_query,
           Enum.map_join(signed_headers, "", fn {k, v} -> "#{k}:#{v}\n" end),
           Enum.map_join(signed_headers, ";", &elem(&1, 0)),

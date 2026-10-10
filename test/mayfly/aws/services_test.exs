@@ -29,7 +29,7 @@ defmodule Mayfly.AWS.ServicesTest do
           %{method: "PUT"} ->
             {200, [{"ETag", ~s("abc")}], ""}
 
-          %{method: "GET", path: "/b/dir/f%20x.json"} ->
+          %{method: "GET", path: "/b/dir/f x.json"} ->
             {200, [{"Content-Type", "application/json"}], ~s({"a":1})}
 
           %{method: "HEAD"} ->
@@ -54,7 +54,7 @@ defmodule Mayfly.AWS.ServicesTest do
                )
 
       put = FakeAWS.last(pid)
-      assert put.path == "/b/dir/f%20x.json"
+      assert put.raw_path == "/b/dir/f%20x.json" and put.path == "/b/dir/f x.json"
 
       assert put.headers["content-type"] == "application/json" and
                put.headers["x-amz-meta-owner"] == "ada"
@@ -71,6 +71,29 @@ defmodule Mayfly.AWS.ServicesTest do
                S3.head_object("b", "k", opts)
 
       assert :ok = S3.delete_object("b", "k", opts)
+    end
+
+    test "keys with spaces, plus, unicode and reserved characters sign correctly (FakeAWS verifies)" do
+      {pid, opts} =
+        fake(fn
+          %{method: "PUT"} -> {200, [{"ETag", ~s("e")}], ""}
+          %{method: "GET"} -> {200, [], "body"}
+        end)
+
+      for key <- [
+            "dir/a b.txt",
+            "plus+sign.csv",
+            "umlaut/ärger ß.json",
+            "paren(1)=x,y;z@!*'.bin",
+            "a//b"
+          ] do
+        assert {:ok, _} = S3.put_object("b", key, "x", opts), key
+        assert {:ok, "body", _} = S3.get_object("b", key, opts), key
+      end
+
+      assert FakeAWS.last(pid).path == "/b/a//b"
+      assert Enum.any?(FakeAWS.requests(pid), &(&1.raw_path == "/b/dir/a%20b.txt"))
+      assert Enum.any?(FakeAWS.requests(pid), &(&1.raw_path == "/b/plus%2Bsign.csv"))
     end
 
     test "errors are parsed from S3 XML and 404 on HEAD is NotFound" do

@@ -75,7 +75,7 @@ defmodule Mayfly.AWS.SigV4 do
       Enum.join(
         [
           String.upcase(method),
-          canonical_path(uri.path),
+          canonical_path(uri.path, service),
           canonical_query(uri.query),
           Enum.map_join(headers, "", fn {k, v} -> "#{k}:#{v}\n" end),
           signed_headers,
@@ -111,10 +111,16 @@ defmodule Mayfly.AWS.SigV4 do
   end
 
   @doc false
-  def canonical_path(nil), do: "/"
-  def canonical_path(""), do: "/"
+  def canonical_path(path, service \\ "")
 
-  def canonical_path(path) do
+  def canonical_path(nil, _), do: "/"
+  def canonical_path("", _), do: "/"
+
+  # S3 is the exception in the SigV4 spec: the canonical URI is the URL path
+  # exactly as sent (already percent-encoded once), not encoded again.
+  def canonical_path(path, "s3"), do: path
+
+  def canonical_path(path, _service) do
     # Encode each segment per RFC 3986 (unreserved chars unencoded), keep "/".
     path
     |> String.split("/")

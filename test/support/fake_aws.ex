@@ -30,7 +30,72 @@ defmodule Mayfly.AWS.FakeAWS do
       Map.has_key?(req.headers, "authorization") or
         raise("unsigned request #{req.method} #{req.path}")
 
+    :ok = verify_signature!(req)
     {:reply, s.responder.(req), %{s | requests: [req | s.requests]}}
+  end
+
+  # Recomputes the SigV4 signature exactly as AWS does (S3: path verbatim; other
+  # services: path encoded) with the test credentials, so an encoding mistake in
+  # the client fails here instead of with SignatureDoesNotMatch in production.
+  defp verify_signature!(req) do
+    auth = req.headers["authorization"]
+
+    [_, access_key, date, region, service, signed, signature] =
+      Regex.run(
+        ~r/AWS4-HMAC-SHA256 Credential=([^\/]+)\/(\d{8})\/([^\/]+)\/([^\/]+)\/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})/,
+        auth
+      )
+
+    secret = System.fetch_env!("AWS_SECRET_ACCESS_KEY")
+    access_key == System.fetch_env!("AWS_ACCESS_KEY_ID") || raise("wrong access key in #{auth}")
+
+    headers =
+      signed
+      |> String.split(";")
+      |> Enum.map_join(fn h -> "#{h}:#{String.trim(req.headers[h] || "")}\n" end)
+
+    payload_hash =
+      req.headers["x-amz-content-sha256"] ||
+        :crypto.hash(:sha256, req.body) |> Base.encode16(case: :lower)
+
+    canonical_path =
+      if service == "s3",
+        do: req.raw_path,
+        else: Mayfly.AWS.SigV4.canonical_path(req.raw_path, service)
+
+    creq =
+      Enum.join(
+        [
+          req.method,
+          canonical_path,
+          Mayfly.AWS.SigV4.canonical_query(req.raw_query),
+          headers,
+          signed,
+          payload_hash
+        ],
+        "\n"
+      )
+
+    sts =
+      Enum.join(
+        [
+          "AWS4-HMAC-SHA256",
+          req.headers["x-amz-date"],
+          "#{date}/#{region}/#{service}/aws4_request",
+          :crypto.hash(:sha256, creq) |> Base.encode16(case: :lower)
+        ],
+        "\n"
+      )
+
+    key = Mayfly.AWS.SigV4.signing_key(secret, date, region, service)
+    expected = :crypto.mac(:hmac, :sha256, key, sts) |> Base.encode16(case: :lower)
+
+    if expected == signature,
+      do: :ok,
+      else:
+        raise(
+          "SignatureDoesNotMatch for #{req.method} #{req.raw_path}: canonical request\n#{creq}"
+        )
   end
 
   defp accept(listen, server) do
@@ -56,7 +121,9 @@ defmodule Mayfly.AWS.FakeAWS do
 
     req = %{
       method: method,
-      path: path,
+      path: URI.decode(path),
+      raw_path: path,
+      raw_query: query,
       query: URI.decode_query(query || ""),
       headers: headers,
       body: body

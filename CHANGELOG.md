@@ -2,6 +2,19 @@
 
 ## [0.2.0] - 2026-10-10
 
+### Fixed
+- S3 signatures no longer double-encode the object key (`SignatureDoesNotMatch`
+  for keys with spaces, `+`, `=`, unicode, …); the test server now verifies every
+  signature the way AWS does. Presigned URLs keep a non-default port in the host.
+- `Mayfly.Idempotency`: completion and release are conditioned on a per-claim
+  token, so a stale owner can neither overwrite nor delete a claim that was taken
+  over; the result store is retried on transient errors and warns above DynamoDB's
+  item size.
+- `Mayfly.AWS.SQS.receive_messages/2` HTTP timeout outlasts the long poll.
+- `Mayfly.AWS.DynamoDB.to_av/1` raises on unsupported terms instead of storing
+  `inspect/1` output; floats are formatted without exponent.
+- `mayfly` is a Hex dependency by default (`MAYFLY_PATH` for local development).
+
 ### Added
 - `Mayfly.AWS.S3`: put/get/head/delete object, ListObjectsV2 (one page), presigned
   GET/PUT URLs (query-string SigV4).

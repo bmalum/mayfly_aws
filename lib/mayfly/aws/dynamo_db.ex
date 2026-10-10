@@ -126,7 +126,8 @@ defmodule Mayfly.AWS.DynamoDB do
   def to_av(nil), do: %{"NULL" => true}
   def to_av(b) when is_boolean(b), do: %{"BOOL" => b}
   def to_av(n) when is_integer(n), do: %{"N" => Integer.to_string(n)}
-  def to_av(f) when is_float(f), do: %{"N" => Float.to_string(f)}
+  # DynamoDB rejects exponent notation ("1.0e3"); format as plain decimal.
+  def to_av(f) when is_float(f), do: %{"N" => :erlang.float_to_binary(f, [:short])}
 
   def to_av(s) when is_binary(s),
     do: if(String.valid?(s), do: %{"S" => s}, else: %{"B" => Base.encode64(s)})
@@ -134,7 +135,12 @@ defmodule Mayfly.AWS.DynamoDB do
   def to_av(a) when is_atom(a), do: %{"S" => Atom.to_string(a)}
   def to_av(l) when is_list(l), do: %{"L" => Enum.map(l, &to_av/1)}
   def to_av(%{} = m) when not is_struct(m), do: %{"M" => to_attribute_values(m)}
-  def to_av(other), do: %{"S" => inspect(other)}
+
+  def to_av(other) do
+    raise ArgumentError,
+          "cannot convert #{inspect(other, limit: 10)} to a DynamoDB attribute value; " <>
+            "supported: nil, booleans, numbers, strings, atoms, lists, maps"
+  end
 
   defp values(nil), do: nil
   defp values(map), do: Map.new(map, fn {k, v} -> {to_string(k), to_av(v)} end)
